@@ -117,6 +117,7 @@ static const char *             usocket_name = NULL;
 static int                      usocket_fd;
 
 static char                     identifier[64] = "\0";
+static char                     iprintable[64] = "\0";
 
 // Length of maximum output (dest_str alarm_flag average_latency_usec latency_deviation average_loss_percent)
 #define OUTPUT_MAX              (sizeof(identifier) + sizeof(dest_str) + sizeof(" 1 999999999999 999999999999 100\0"))
@@ -190,6 +191,9 @@ static uint16_t                 sequence_limit;
 
 // Receive thread ready
 static unsigned int             recv_ready = 0;
+
+static struct tm                timeinfo;
+static time_t                   rawtime;
 
 //
 // Termination handler
@@ -362,7 +366,7 @@ send_thread(
         len = sendto(send_sock, echo_request, echo_request_len, 0, (struct sockaddr *) &dest_addr, dest_addr_len);
         if (len == -1)
         {
-            logger("%s%s: sendto error: %d\n", identifier, dest_str, errno);
+            logger("%s%s: sendto error: %d\n", iprintable, dest_str, errno);
         }
 
         next_slot = (next_slot + 1) % array_size;
@@ -402,7 +406,7 @@ recv_thread(
         len = recvfrom(recv_sock, echo_reply, echo_reply_len, 0, (struct sockaddr *) &src_addr, &src_addr_len);
         if (len == -1)
         {
-            logger("%s%s: recvfrom error: %d\n", identifier, dest_str, errno);
+            logger("%s%s: recvfrom error: %d\n", iprintable, dest_str, errno);
             continue;
         }
         clock_gettime(CLOCK_MONOTONIC, &now);
@@ -415,7 +419,7 @@ recv_thread(
             // With IPv4, we get the entire IP packet
             if (len < (ssize_t) sizeof(struct ip))
             {
-                logger("%s%s: received packet too small for IP header\n", identifier, dest_str);
+                logger("%s%s: received packet too small for IP header\n", iprintable, dest_str);
                 continue;
             }
             ip = echo_reply;
@@ -433,7 +437,7 @@ recv_thread(
         // This should never happen
         if (len < (ssize_t) sizeof(icmphdr_t))
         {
-            logger("%s%s: received packet too small for ICMP header\n", identifier, dest_str);
+            logger("%s%s: received packet too small for ICMP header\n", iprintable, dest_str);
             continue;
         }
 
@@ -446,7 +450,7 @@ recv_thread(
         array_slot = ntohs(icmp->sequence) % array_size;
         if (array[array_slot].status == PACKET_STATUS_RECEIVED)
         {
-            logger("%s%s: duplicate echo reply received\n", identifier, dest_str);
+            logger("%s%s: duplicate echo reply received\n", iprintable, dest_str);
             continue;
         }
 
@@ -475,6 +479,12 @@ report(
     unsigned int                i;
 
     clock_gettime(CLOCK_MONOTONIC, &now);
+
+    if (flag_print_datetime)
+    {
+        rawtime = time(NULL);
+        timeinfo = *localtime(&rawtime);
+    }
 
     slot = next_slot;
     for (i = 0; i < array_size; i++)
@@ -535,8 +545,6 @@ report_thread(
     unsigned long               average_latency_usec;
     unsigned long               latency_deviation;
     unsigned long               average_loss_percent;
-    struct tm                   timeinfo;
-    time_t                      rawtime;
     ssize_t                     len;
     ssize_t                     rs;
     int                         r;
@@ -544,11 +552,6 @@ report_thread(
     // Set up the timespec for nanosleep
     sleeptime.tv_sec = report_interval_msec / 1000;
     sleeptime.tv_nsec = (report_interval_msec % 1000) * 1000000;
-
-    if (flag_print_datetime)
-    {
-        identifier[strlen(identifier)-1] = 0;
-    }
 
     while (1)
     {
@@ -562,13 +565,11 @@ report_thread(
 
         if (flag_print_datetime)
         {
-            rawtime = time(NULL);
-            timeinfo = *localtime(&rawtime);
             len = snprintf(buf, sizeof(buf), "[%04d-%02d-%02d %02d:%02d:%02d] [%s] %lu %lu %lu\n", timeinfo.tm_year+1900, timeinfo.tm_mon+1, timeinfo.tm_mday, timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec, identifier, average_latency_usec, latency_deviation, average_loss_percent);
         }
         else
         {
-            len = snprintf(buf, sizeof(buf), "%s%lu %lu %lu\n", identifier, average_latency_usec, latency_deviation, average_loss_percent);
+            len = snprintf(buf, sizeof(buf), "%s%lu %lu %lu\n", iprintable, average_latency_usec, latency_deviation, average_loss_percent);
         }
 
         if (len < 0 || (size_t) len > sizeof(buf))
@@ -675,11 +676,11 @@ alert_thread(
             alert = 0;
 
             alarm_on = latency_alarm_decay || loss_alarm_decay;
-            logger("%s%s: %s latency %luus stddev %luus loss %lu%%\n", identifier, dest_str, alarm_on ? "Alarm" : "Clear", average_latency_usec, latency_deviation, average_loss_percent);
+            logger("%s%s: %s latency %luus stddev %luus loss %lu%%\n", iprintable, dest_str, alarm_on ? "Alarm" : "Clear", average_latency_usec, latency_deviation, average_loss_percent);
 
             if (alert_cmd)
             {
-                r = snprintf(alert_cmd + alert_cmd_offset, OUTPUT_MAX, " %s%s %u %lu %lu %lu", identifier, dest_str, alarm_on, average_latency_usec, latency_deviation, average_loss_percent);
+                r = snprintf(alert_cmd + alert_cmd_offset, OUTPUT_MAX, " %s%s %u %lu %lu %lu", iprintable, dest_str, alarm_on, average_latency_usec, latency_deviation, average_loss_percent);
                 if (r < 0 || (size_t) r >= OUTPUT_MAX)
                 {
                     logger("error formatting command in alert thread\n");
@@ -728,7 +729,7 @@ usocket_thread(
 
         report(&average_latency_usec, &latency_deviation, &average_loss_percent);
 
-        len = snprintf(buf, sizeof(buf), "%s%lu %lu %lu\n", identifier, average_latency_usec, latency_deviation, average_loss_percent);
+        len = snprintf(buf, sizeof(buf), "%s%lu %lu %lu\n", iprintable, average_latency_usec, latency_deviation, average_loss_percent);
         if (len < 0 || (size_t) len > sizeof(buf))
         {
             logger("error formatting output in usocket thread\n");
@@ -1045,10 +1046,12 @@ parse_args(
             {
                 fatal("identifier argument too large (max %u bytes)\n", (unsigned) sizeof(identifier) - 1);
             }
-            // optarg with a space appended
             memcpy(identifier, optarg, len);
-            identifier[len] = ' ';
-            identifier[len + 1] = '\0';
+            identifier[len] = '\0';
+            // optarg with a space appended
+            memcpy(iprintable, optarg, len);
+            iprintable[len] = ' ';
+            iprintable[len + 1] = '\0';
             break;
 
         case 'u':
