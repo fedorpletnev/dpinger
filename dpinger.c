@@ -70,6 +70,7 @@ static const char *             pidfile_name = NULL;
 static unsigned int             flag_rewind = 0;
 static unsigned int             flag_syslog = 0;
 static unsigned int             flag_priority = 0;
+static unsigned int             flag_print_datetime = 0;
 
 // String representation of target
 #define ADDR_STR_MAX            (INET6_ADDRSTRLEN + IF_NAMESIZE + 1)
@@ -534,6 +535,8 @@ report_thread(
     unsigned long               average_latency_usec;
     unsigned long               latency_deviation;
     unsigned long               average_loss_percent;
+    struct tm                   timeinfo;
+    time_t                      rawtime;
     ssize_t                     len;
     ssize_t                     rs;
     int                         r;
@@ -541,6 +544,11 @@ report_thread(
     // Set up the timespec for nanosleep
     sleeptime.tv_sec = report_interval_msec / 1000;
     sleeptime.tv_nsec = (report_interval_msec % 1000) * 1000000;
+
+    if (flag_print_datetime)
+    {
+        identifier[strlen(identifier)-1] = 0;
+    }
 
     while (1)
     {
@@ -552,7 +560,17 @@ report_thread(
 
         report(&average_latency_usec, &latency_deviation, &average_loss_percent);
 
-        len = snprintf(buf, sizeof(buf), "%s%lu %lu %lu\n", identifier, average_latency_usec, latency_deviation, average_loss_percent);
+        if (flag_print_datetime)
+        {
+            rawtime = time(NULL);
+            timeinfo = *localtime(&rawtime);
+            len = snprintf(buf, sizeof(buf), "[%04d-%02d-%02d %02d:%02d:%02d] [%s] %lu %lu %lu\n", timeinfo.tm_year+1900, timeinfo.tm_mon+1, timeinfo.tm_mday, timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec, identifier, average_latency_usec, latency_deviation, average_loss_percent);
+        }
+        else
+        {
+            len = snprintf(buf, sizeof(buf), "%s%lu %lu %lu\n", identifier, average_latency_usec, latency_deviation, average_loss_percent);
+        }
+
         if (len < 0 || (size_t) len > sizeof(buf))
         {
             logger("error formatting output in report thread\n");
@@ -848,6 +866,7 @@ usage(void)
     fprintf(stderr, "    -R rewind output file between reports\n");
     fprintf(stderr, "    -S log warnings via syslog\n");
     fprintf(stderr, "    -P priority scheduling for receive thread (requires root)\n");
+    fprintf(stderr, "    -T print datetime header in report\n");
     fprintf(stderr, "    -B bind (source) address\n");
     fprintf(stderr, "    -s time interval between echo requests (default 500ms)\n");
     fprintf(stderr, "    -l time interval before packets are treated as lost (default 4x send interval)\n");
@@ -913,7 +932,7 @@ parse_args(
 
     progname = argv[0];
 
-    while((opt = getopt(argc, argv, "fRSPB:s:l:t:r:d:o:A:D:L:C:i:u:p:")) != -1)
+    while((opt = getopt(argc, argv, "fRSPTB:s:l:t:r:d:o:A:D:L:C:i:u:p:")) != -1)
     {
         switch (opt)
         {
@@ -931,6 +950,10 @@ parse_args(
 
         case 'P':
             flag_priority = 1;
+            break;
+
+        case 'T':
+            flag_print_datetime = 1;
             break;
 
         case 'B':
